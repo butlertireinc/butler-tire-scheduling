@@ -20,6 +20,7 @@ const DEFAULT_SETTINGS = {
   adminPasswordHash:    null,   // SHA-256 hash — never stored in plain text
   adminPasswordChanged: false,  // true once changed from default
   requireApproval:      false,  // if true, all bookings need admin approval
+  emailjs: { enabled: false, serviceId: "", templateId: "", publicKey: "" },
   dayHours: {
     monday:    { open: 8, close: 17 },
     tuesday:   { open: 8, close: 17 },
@@ -48,8 +49,8 @@ const TIME_SLOTS = [8, 10, 13, 15].map(h => {
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
 const T = {
-  yellow:    "#003DA5",
-  yellowBg:  "#EEF2FB",
+  yellow:    "#0057E7",
+  yellowBg:  "#EBF2FF",
   black:     "#111111",
   gray:      "#666666",
   lightGray: "#E0E0E0",
@@ -59,35 +60,6 @@ const T = {
 };
 
 // ── Storage helpers ───────────────────────────────────────────────────────────
-// Uses Upstash Redis REST API for true cross-device sync.
-// Set VITE_UPSTASH_URL and VITE_UPSTASH_TOKEN in your Vercel environment variables.
-const KV_URL   = import.meta.env.VITE_UPSTASH_URL   || "";
-const KV_TOKEN = import.meta.env.VITE_UPSTASH_TOKEN || "";
-
-async function kvGet(key) {
-  if (!KV_URL) return null;
-  try {
-    const r = await fetch(KV_URL, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${KV_TOKEN}`, "Content-Type": "application/json" },
-      body: JSON.stringify(["GET", key]),
-    });
-    const { result } = await r.json();
-    return result ? { value: result } : null;
-  } catch { return null; }
-}
-
-async function kvSet(key, value) {
-  if (!KV_URL) return;
-  try {
-    await fetch(KV_URL, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${KV_TOKEN}`, "Content-Type": "application/json" },
-      body: JSON.stringify(["SET", key, value]),
-    });
-  } catch (e) { console.error("Storage error:", e); }
-}
-
 // ── Crypto ────────────────────────────────────────────────────────────────────
 // Lockout tracking lives at module level — persists while the page is open,
 // but is completely isolated per browser/device. A customer on their phone
@@ -102,22 +74,24 @@ async function hashPassword(pwd) {
 
 async function loadBookings() {
   try {
-    const r = await kvGet(STORAGE_KEY);
+    const r = await window.storage.get(STORAGE_KEY, true);
     return r ? JSON.parse(r.value) : [];
   } catch { return []; }
 }
 
 async function saveBookings(list) {
-  await kvSet(STORAGE_KEY, JSON.stringify(list));
+  try { await window.storage.set(STORAGE_KEY, JSON.stringify(list), true); }
+  catch (e) { console.error("Storage error:", e); }
 }
 
 async function loadSettings() {
   let s = { ...DEFAULT_SETTINGS };
   try {
-    const r = await kvGet(SETTINGS_KEY);
+    const r = await window.storage.get(SETTINGS_KEY, true);
     if (r) s = { ...DEFAULT_SETTINGS, ...JSON.parse(r.value) };
-  } catch { /* use defaults */ }
+  } catch { /* storage unavailable, use defaults */ }
 
+  // Always ensure a password hash is set — never leave it null
   if (!s.adminPasswordHash) {
     try {
       s.adminPasswordHash = await hashPassword(s.adminPin ?? "1234");
@@ -129,7 +103,8 @@ async function loadSettings() {
 }
 
 async function saveSettings(s) {
-  await kvSet(SETTINGS_KEY, JSON.stringify(s));
+  try { await window.storage.set(SETTINGS_KEY, JSON.stringify(s), true); }
+  catch (e) { console.error("Settings error:", e); }
 }
 
 function getEffectiveBays(settings, date) {
@@ -139,6 +114,36 @@ function getEffectiveBays(settings, date) {
 
 function genId() {
   return "BK-" + Math.random().toString(36).slice(2, 8).toUpperCase();
+}
+
+// ── Email confirmation ────────────────────────────────────────────────────────
+async function sendConfirmationEmail(booking, settings) {
+  const cfg = settings?.emailjs;
+  if (!cfg?.enabled || !cfg?.serviceId || !cfg?.templateId || !cfg?.publicKey) return;
+  if (!booking.email) return;
+  try {
+    const svcs  = getServices(settings);
+    const slots = getTimeSlots(settings);
+    await fetch("https://api.emailjs.com/api/v1.0/email/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        service_id:   cfg.serviceId,
+        template_id:  cfg.templateId,
+        user_id:      cfg.publicKey,
+        template_params: {
+          to_name:    booking.name,
+          to_email:   booking.email,
+          services:   svcs.filter(s => (booking.serviceIds || []).includes(s.id)).map(s => s.name).join(", "),
+          date:       booking.date ? displayDate(booking.date) : "",
+          time:       slots.find(t => t.value === booking.hour)?.label ?? "",
+          vehicle:    `${booking.year} ${booking.make} ${booking.model}`,
+          shop_name:  "Butler Tires for Less",
+          shop_phone: "(724) 283-8473",
+        },
+      }),
+    });
+  } catch (e) { console.error("Email send failed:", e); }
 }
 
 // ── Settings-aware helpers ────────────────────────────────────────────────────
@@ -382,8 +387,8 @@ export default function App() {
       {/* Nav */}
       <nav style={{ background: T.black, height: "52px", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 16px", gap: "8px" }}>
         <div style={{ display: "flex", flexDirection: "column", gap: "1px", flexShrink: 0 }}>
-          <span style={{ color: T.yellow, fontFamily: "'Space Grotesk', system-ui, sans-serif", fontWeight: 700, fontSize: isMobile ? "14px" : "17px", letterSpacing: "0.06em", textTransform: "uppercase", lineHeight: 1 }}>
-            Butler Tire
+          <span style={{ color: T.yellow, fontFamily: "'Space Grotesk', system-ui, sans-serif", fontWeight: 700, fontSize: isMobile ? "13px" : "15px", letterSpacing: "0.04em", textTransform: "uppercase", lineHeight: 1 }}>
+            Butler Tires for Less
           </span>
           {!isMobile && (
             <span style={{ color: "#888", fontFamily: "'Space Grotesk', system-ui, sans-serif", fontWeight: 500, fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", lineHeight: 1 }}>
@@ -543,6 +548,7 @@ function BookingFlow({ bookings, onBook, settings, isMobile }) {
     const needsApproval = settings.requireApproval || sel.serviceIds.includes("other");
     const booking = { id: genId(), ...form, serviceIds: sel.serviceIds, date: sel.date, hour: sel.hour, bay: sel.bay, status: needsApproval ? "pending" : "confirmed", createdAt: new Date().toISOString() };
     await onBook(booking);
+    if (booking.status === "confirmed") await sendConfirmationEmail(booking, settings);
     setConfirmed(booking);
     setStep(4);
     setSubmitting(false);
@@ -1048,6 +1054,42 @@ function SettingsPanel({ settings, onUpdate }) {
           )}
       </Section>
 
+      {/* ── Email Notifications ── */}
+      <Section title="Email Confirmations" subtitle="Automatically email customers when their appointment is confirmed. Requires a free EmailJS account (emailjs.com) — takes about 5 minutes to set up.">
+        <div style={{ marginTop: "14px", display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
+          <div>
+            <div style={{ fontWeight: 600, fontSize: "14px", marginBottom: "2px" }}>Send confirmation emails</div>
+            <div style={{ fontSize: "12px", color: T.gray }}>Currently: <strong>{settings.emailjs?.enabled ? "On" : "Off"}</strong></div>
+          </div>
+          <button onClick={() => onUpdate({ emailjs: { ...settings.emailjs, enabled: !settings.emailjs?.enabled } })} style={{
+            width: "52px", height: "28px", borderRadius: "14px", border: "none", cursor: "pointer",
+            background: settings.emailjs?.enabled ? T.yellow : T.lightGray, position: "relative", flexShrink: 0,
+          }}>
+            <span style={{ position: "absolute", top: "3px", width: "22px", height: "22px", borderRadius: "50%", background: T.white, boxShadow: "0 1px 3px rgba(0,0,0,0.2)", left: settings.emailjs?.enabled ? "27px" : "3px", transition: "left 0.2s" }} />
+          </button>
+        </div>
+        {settings.emailjs?.enabled && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+            {[["serviceId","EmailJS Service ID","service_xxxxx"],["templateId","Template ID","template_xxxxx"],["publicKey","Public Key","xxxxxxxxxxxxxxx"]].map(([key, label, ph]) => (
+              <div key={key}>
+                <label style={labelStyle}>{label}</label>
+                <input value={settings.emailjs?.[key] || ""} placeholder={ph}
+                  onChange={e => onUpdate({ emailjs: { ...settings.emailjs, [key]: e.target.value } })}
+                  style={inputStyle} />
+              </div>
+            ))}
+            <div style={{ background: T.offWhite, borderRadius: "8px", padding: "12px 14px", fontSize: "12px", color: T.gray, lineHeight: "1.6" }}>
+              <strong>Setup steps:</strong><br />
+              1. Go to <strong>emailjs.com</strong> and create a free account<br />
+              2. Add an Email Service (Gmail works great)<br />
+              3. Create an Email Template with these variables:<br />
+              <code style={{ background: T.white, padding: "2px 4px", borderRadius: "3px", fontSize: "11px" }}>{"{{to_name}} {{to_email}} {{services}} {{date}} {{time}} {{vehicle}} {{shop_name}} {{shop_phone}}"}</code><br />
+              4. Copy your Service ID, Template ID, and Public Key above
+            </div>
+          </div>
+        )}
+      </Section>
+
       {/* ── Approval ── */}
       <Section title="Appointment Approval" subtitle="When enabled, every new booking goes into a pending queue for you to approve before it's confirmed on the schedule. When off, only 'Other' requests need approval.">
         <div style={{ marginTop: "14px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -1281,7 +1323,31 @@ function AdminView({ bookings, onCancel, onUpdate, onBook, onClear, settings, on
     .sort((a, b) => a.date.localeCompare(b.date) || a.hour - b.hour);
 
   const doCancel  = async (id) => { await onCancel(id); setCC(null); };
-  const doApprove = async (id) => { await onUpdate(id, { status: "confirmed" }); };
+  const doApprove = async (id) => {
+    const b = bookings.find(bk => bk.id === id);
+    if (!b) return;
+    // Check if bay is still free before approving
+    const svcs = getServices(settings);
+    const dur = getBkDuration(b, svcs);
+    const occupied = getOccupiedBaysAt(bookings, b.date, b.hour, dur, settings);
+    if (occupied.has(b.bay)) {
+      // Try to find another free bay
+      const eb = getEffectiveBays(settings, b.date);
+      let freeBay = null;
+      for (let bay = 1; bay <= eb; bay++) {
+        if (!occupied.has(bay)) { freeBay = bay; break; }
+      }
+      if (!freeBay) {
+        alert("No bays are available at that time anymore. Please reschedule before approving.");
+        return;
+      }
+      await onUpdate(id, { status: "confirmed", bay: freeBay });
+    } else {
+      await onUpdate(id, { status: "confirmed" });
+    }
+    // Send confirmation email if configured
+    await sendConfirmationEmail(b, settings);
+  };
   const doDecline = async (id) => { await onUpdate(id, { status: "declined" }); };
 
   return (
@@ -1324,7 +1390,7 @@ function AdminView({ bookings, onCancel, onUpdate, onBook, onClear, settings, on
       </div>
 
       {/* Calendar */}
-      <CalendarPanel bookings={bookings} settings={settings} onBook={onBook} />
+      <CalendarPanel bookings={bookings} settings={settings} onBook={onBook} onCancel={onCancel} onUpdate={onUpdate} />
 
       {/* Bay Settings */}
       <div style={{ background: T.white, border: `1px solid ${T.lightGray}`, borderRadius: "8px", padding: "20px", marginBottom: "20px" }}>
@@ -1938,7 +2004,7 @@ function BayBlockModal({ bookings, settings, onBook, onClose }) {
 }
 
 // ── Calendar Panel ────────────────────────────────────────────────────────────
-function CalendarPanel({ bookings, settings, onBook }) {
+function CalendarPanel({ bookings, settings, onBook, onCancel, onUpdate }) {
   const [calView, setCalView] = useState("week");
   const [calDate, setCalDate] = useState(new Date());
   const [modal, setModal]     = useState(null);
@@ -1997,7 +2063,7 @@ function CalendarPanel({ bookings, settings, onBook }) {
             </div>
           </div>
         </div>
-        {calView === "day"   && <CalDayView   date={calDate} bookings={bookings} settings={settings} onAdd={(date, hour, bay) => setModal({ date, hour, bay })} />}
+        {calView === "day"   && <CalDayView   date={calDate} bookings={bookings} settings={settings} onAdd={(date, hour, bay) => setModal({ date, hour, bay })} onCancel={onCancel} onUpdate={onUpdate} />}
         {calView === "week"  && <CalWeekView  date={calDate} bookings={bookings} settings={settings} setDate={setCalDate} setView={setCalView} onAdd={(date, hour) => setModal({ date, hour })} />}
         {calView === "month" && <CalMonthView date={calDate} bookings={bookings} settings={settings} setDate={setCalDate} setView={setCalView} />}
       </div>
@@ -2005,11 +2071,13 @@ function CalendarPanel({ bookings, settings, onBook }) {
   );
 }
 
-function CalDayView({ date, bookings, settings, onAdd }) {
+function CalDayView({ date, bookings, settings, onAdd, onCancel, onUpdate }) {
   const ds = toDateStr(date);
   const effectiveBays = getEffectiveBays(settings, ds);
-  const dayBks = bookings.filter(b => b.date === ds && b.status === "confirmed");
+  const dayBks = bookings.filter(b => b.date === ds && (b.status === "confirmed" || b.status === "completed"));
   const closed = isHolidayClosed(ds);
+  const [cancelConfirm, setCancelConfirm] = useState(null);
+  const [expandedNotes, setExpandedNotes] = useState(null);
 
   if (closed) return (
     <div style={{ padding: "32px", textAlign: "center", color: T.red, fontSize: "14px", fontWeight: 500 }}>Closed — Holiday</div>
@@ -2026,15 +2094,47 @@ function CalDayView({ date, bookings, settings, onAdd }) {
         return (
           <div key={slot.value} style={{ marginBottom: "14px" }}>
             <div style={{ fontSize: "11px", fontWeight: 700, color: T.gray, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: "6px" }}>{slot.label}</div>
-            <div style={{ display: "flex", gap: "8px" }}>
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
               {bays.map(({ bay, bk }) => (
-                <div key={bay} style={{ flex: 1, padding: "10px 12px", borderRadius: "6px", background: bk ? T.yellowBg : T.offWhite, border: `1px solid ${bk ? T.yellow + "66" : T.lightGray}`, minHeight: "56px", position: "relative" }}>
-                  <div style={{ fontSize: "10px", fontWeight: 700, color: bk ? T.yellow : "#ccc", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "4px" }}>Bay {bay}</div>
+                <div key={bay} style={{ flex: 1, minWidth: "140px", padding: "10px 12px", borderRadius: "6px", background: bk ? (bk.status === "completed" ? "#F0FDF4" : T.yellowBg) : T.offWhite, border: `1px solid ${bk ? (bk.status === "completed" ? "#86EFAC" : T.yellow + "66") : T.lightGray}`, minHeight: "56px" }}>
+                  <div style={{ fontSize: "10px", fontWeight: 700, color: bk ? (bk.status === "completed" ? "#22C55E" : T.yellow) : "#ccc", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "4px" }}>Bay {bay}</div>
                   {bk ? (
                     <>
                       <div style={{ fontWeight: 600, fontSize: "13px" }}>{bk.name}</div>
                       <div style={{ fontSize: "11px", color: T.gray, marginTop: "1px" }}>{bk.year} {bk.make} {bk.model}</div>
                       <div style={{ fontSize: "11px", color: T.yellow, marginTop: "2px", fontWeight: 500 }}>{getBkNames(bk, getServices(settings))}</div>
+
+                      {bk.notes && (
+                        <div style={{ marginTop: "5px" }}>
+                          <button onClick={() => setExpandedNotes(expandedNotes === bk.id ? null : bk.id)}
+                            style={{ border: "none", background: "none", cursor: "pointer", fontSize: "11px", color: T.gray, padding: 0, fontFamily: "inherit", textDecoration: "underline" }}>
+                            {expandedNotes === bk.id ? "Hide note" : "📝 Note"}
+                          </button>
+                          {expandedNotes === bk.id && (
+                            <div style={{ fontSize: "11px", color: T.black, background: T.white, border: `1px solid ${T.lightGray}`, borderRadius: "4px", padding: "5px 7px", marginTop: "4px", fontStyle: "italic" }}>
+                              "{bk.notes}"
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {bk.status !== "completed" && !bk.isBlock && onCancel && (
+                        <div style={{ marginTop: "7px" }}>
+                          {cancelConfirm === bk.id ? (
+                            <div style={{ display: "flex", gap: "4px" }}>
+                              <button onClick={() => { onCancel(bk.id); setCancelConfirm(null); }}
+                                style={{ border: "none", background: T.red, color: T.white, borderRadius: "4px", padding: "3px 8px", fontSize: "10px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Confirm</button>
+                              <button onClick={() => setCancelConfirm(null)}
+                                style={{ border: `1px solid ${T.lightGray}`, background: T.white, color: T.gray, borderRadius: "4px", padding: "3px 8px", fontSize: "10px", cursor: "pointer", fontFamily: "inherit" }}>Keep</button>
+                            </div>
+                          ) : (
+                            <button onClick={() => setCancelConfirm(bk.id)}
+                              style={{ border: `1px solid ${T.lightGray}`, background: T.white, color: T.gray, borderRadius: "4px", padding: "3px 10px", fontSize: "10px", cursor: "pointer", fontFamily: "inherit" }}>
+                              Cancel appt.
+                            </button>
+                          )}
+                        </div>
+                      )}
                     </>
                   ) : (
                     <button onClick={() => onAdd(ds, slot.value, bay)} style={{ border: "none", background: "none", cursor: "pointer", color: "#bbb", fontSize: "13px", padding: 0, display: "flex", alignItems: "center", gap: "4px", fontFamily: "inherit" }}>
