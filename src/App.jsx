@@ -1748,7 +1748,7 @@ function AdminView({ bookings, onCancel, onUpdate, onBook, onClear, settings, on
 function AdminBookModal({ prefillDate, prefillHour, prefillBay, bookings, settings, onBook, onClose }) {
   const [form, setForm]     = useState({ name: "", phone: "", email: "", make: "", model: "", year: "" });
   const [serviceIds, setSvc] = useState([]);
-  const [date, setDate]     = useState(prefillDate || "");
+  const [date, setDate]     = useState(() => prefillDate && !isWeekendClosed(prefillDate, settings) && !isDateClosed(prefillDate, settings) ? prefillDate : "");
   const [hour, setHour]     = useState(prefillHour ?? null);
   const [bay, setBay]       = useState(prefillBay ?? null);
   const [saving, setSaving] = useState(false);
@@ -2005,10 +2005,11 @@ function BayBlockModal({ bookings, settings, onBook, onClose }) {
 
 // ── Calendar Panel ────────────────────────────────────────────────────────────
 function CalendarPanel({ bookings, settings, onBook, onCancel, onUpdate }) {
-  const [calView, setCalView] = useState("week");
-  const [calDate, setCalDate] = useState(new Date());
-  const [modal, setModal]     = useState(null);
+  const [calView, setCalView]       = useState("week");
+  const [calDate, setCalDate]       = useState(new Date());
+  const [modal, setModal]           = useState(null);
   const [blockModal, setBlockModal] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
 
   function navigate(dir) {
     const d = new Date(calDate);
@@ -2046,12 +2047,17 @@ function CalendarPanel({ bookings, settings, onBook, onCancel, onUpdate }) {
       {blockModal && (
         <BayBlockModal bookings={bookings} settings={settings} onBook={onBook} onClose={() => setBlockModal(false)} />
       )}
-      <div style={{ background: T.white, border: `1px solid ${T.lightGray}`, borderRadius: "8px", overflow: "hidden", marginBottom: "20px" }}>
+      <div style={fullscreen ? {
+        position: "fixed", inset: 0, zIndex: 500, background: T.white,
+        display: "flex", flexDirection: "column", overflow: "hidden",
+      } : {
+        background: T.white, border: `1px solid ${T.lightGray}`, borderRadius: "8px", overflow: "hidden", marginBottom: "20px",
+      }}>
         {/* Header */}
-        <div style={{ padding: "12px 14px", borderBottom: `1px solid ${T.offWhite}`, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "8px" }}>
+        <div style={{ padding: "12px 14px", borderBottom: `1px solid ${T.offWhite}`, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "8px", flexShrink: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
             <button onClick={() => navigate(-1)} style={{ width: "28px", height: "28px", border: `1px solid ${T.lightGray}`, borderRadius: "5px", background: T.white, cursor: "pointer", fontSize: "16px", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "inherit" }}>‹</button>
-            <span style={{ fontWeight: 600, fontSize: "14px", minWidth: "240px", textAlign: "center" }}>{title()}</span>
+            <span style={{ fontWeight: 600, fontSize: "14px", minWidth: "200px", textAlign: "center" }}>{title()}</span>
             <button onClick={() => navigate(1)}  style={{ width: "28px", height: "28px", border: `1px solid ${T.lightGray}`, borderRadius: "5px", background: T.white, cursor: "pointer", fontSize: "16px", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "inherit" }}>›</button>
             <button onClick={() => setCalDate(new Date())} style={{ border: `1px solid ${T.lightGray}`, background: T.white, borderRadius: "5px", padding: "4px 10px", fontSize: "12px", cursor: "pointer", color: T.gray, fontFamily: "inherit", marginLeft: "4px" }}>Today</button>
           </div>
@@ -2061,11 +2067,17 @@ function CalendarPanel({ bookings, settings, onBook, onCancel, onUpdate }) {
             <div style={{ display: "flex", gap: "2px", background: "#EBEBEB", borderRadius: "6px", padding: "3px" }}>
               {["day", "week", "month"].map(v => <button key={v} onClick={() => setCalView(v)} style={tabBtn(v)}>{v.charAt(0).toUpperCase() + v.slice(1)}</button>)}
             </div>
+            <button onClick={() => setFullscreen(f => !f)} title={fullscreen ? "Exit fullscreen" : "Fullscreen"}
+              style={{ width: "30px", height: "30px", border: `1px solid ${T.lightGray}`, borderRadius: "5px", background: fullscreen ? T.yellow : T.white, color: fullscreen ? T.white : T.gray, cursor: "pointer", fontSize: "14px", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "inherit" }}>
+              {fullscreen ? "✕" : "⛶"}
+            </button>
           </div>
         </div>
-        {calView === "day"   && <CalDayView   date={calDate} bookings={bookings} settings={settings} onAdd={(date, hour, bay) => setModal({ date, hour, bay })} onCancel={onCancel} onUpdate={onUpdate} />}
-        {calView === "week"  && <CalWeekView  date={calDate} bookings={bookings} settings={settings} setDate={setCalDate} setView={setCalView} onAdd={(date, hour) => setModal({ date, hour })} />}
-        {calView === "month" && <CalMonthView date={calDate} bookings={bookings} settings={settings} setDate={setCalDate} setView={setCalView} />}
+        <div style={fullscreen ? { flex: 1, overflowY: "auto" } : {}}>
+          {calView === "day"   && <CalDayView   date={calDate} bookings={bookings} settings={settings} onAdd={(date, hour, bay) => setModal({ date, hour, bay })} onCancel={onCancel} onUpdate={onUpdate} />}
+          {calView === "week"  && <CalWeekView  date={calDate} bookings={bookings} settings={settings} setDate={setCalDate} setView={setCalView} onAdd={(date, hour) => setModal({ date, hour })} />}
+          {calView === "month" && <CalMonthView date={calDate} bookings={bookings} settings={settings} setDate={setCalDate} setView={setCalView} />}
+        </div>
       </div>
     </>
   );
@@ -2075,12 +2087,14 @@ function CalDayView({ date, bookings, settings, onAdd, onCancel, onUpdate }) {
   const ds = toDateStr(date);
   const effectiveBays = getEffectiveBays(settings, ds);
   const dayBks = bookings.filter(b => b.date === ds && (b.status === "confirmed" || b.status === "completed"));
-  const closed = isHolidayClosed(ds);
+  const isClosed  = isHolidayClosed(ds) || isWeekendClosed(ds, settings) || isDateClosed(ds, settings);
   const [cancelConfirm, setCancelConfirm] = useState(null);
   const [expandedNotes, setExpandedNotes] = useState(null);
 
-  if (closed) return (
-    <div style={{ padding: "32px", textAlign: "center", color: T.red, fontSize: "14px", fontWeight: 500 }}>Closed — Holiday</div>
+  if (isClosed) return (
+    <div style={{ padding: "32px", textAlign: "center", color: T.red, fontSize: "14px", fontWeight: 500 }}>
+      {isHolidayClosed(ds) || isDateClosed(ds, settings) ? "Closed — Holiday" : "Closed — Weekend (enable in Settings → Weekend Hours)"}
+    </div>
   );
 
   return (
