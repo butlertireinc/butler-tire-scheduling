@@ -1746,7 +1746,7 @@ function AdminView({ bookings, onCancel, onUpdate, onBook, onClear, settings, on
 
 // ── Admin Booking Modal ───────────────────────────────────────────────────────
 function AdminBookModal({ prefillDate, prefillHour, prefillBay, bookings, settings, onBook, onClose }) {
-  const [form, setForm]     = useState({ name: "", phone: "", email: "", make: "", model: "", year: "" });
+  const [form, setForm]     = useState({ name: "", phone: "", email: "", make: "", model: "", year: "", notes: "" });
   const [serviceIds, setSvc] = useState([]);
   const [date, setDate]     = useState(() => prefillDate && !isWeekendClosed(prefillDate, settings) && !isDateClosed(prefillDate, settings) ? prefillDate : "");
   const [hour, setHour]     = useState(prefillHour ?? null);
@@ -1835,10 +1835,18 @@ function AdminBookModal({ prefillDate, prefillHour, prefillBay, bookings, settin
 
           {/* Vehicle */}
           <p style={sectionLabel}>Vehicle</p>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(80px, 1fr))", gap: "12px", marginBottom: "24px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(80px, 1fr))", gap: "12px", marginBottom: "16px" }}>
             {[["make","Make","Toyota"],["model","Model","Camry"],["year","Year","2019"]].map(([k,l,ph]) => (
               <div key={k}><label style={labelStyle}>{l}</label><input style={inputStyle} placeholder={ph} maxLength={k==="year"?4:undefined} value={form[k]} onChange={e => setForm(p => ({ ...p, [k]: e.target.value }))} /></div>
             ))}
+          </div>
+
+          {/* Notes */}
+          <div style={{ marginBottom: "24px" }}>
+            <label style={labelStyle}>Notes <span style={{ fontWeight: 400, textTransform: "none", letterSpacing: 0, color: T.gray }}>(optional)</span></label>
+            <textarea placeholder="Special instructions, parts needed, customer requests..." value={form.notes}
+              onChange={e => setForm(p => ({ ...p, notes: e.target.value }))}
+              style={{ ...inputStyle, display: "block", resize: "vertical", minHeight: "70px", lineHeight: "1.5" }} />
           </div>
 
           <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}>
