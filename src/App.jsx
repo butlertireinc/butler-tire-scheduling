@@ -327,6 +327,7 @@ export default function App() {
   const [ready, setReady]             = useState(false);
   const [adminUnlocked, setAdminUnlocked] = useState(false);
   const [showPinModal, setShowPinModal]   = useState(false);
+  const [lastRefresh, setLastRefresh]     = useState(null);
   const isMobile = useMobile();
 
   useEffect(() => {
@@ -334,8 +335,14 @@ export default function App() {
     link.rel = "stylesheet";
     link.href = "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&display=swap";
     document.head.appendChild(link);
-    loadBookings().then(b => { setBookings(b); setReady(true); });
+    loadBookings().then(b => { setBookings(b); setReady(true); setLastRefresh(new Date()); });
     loadSettings().then(s => setSettings(s));
+
+    // Auto-refresh bookings every 30 seconds
+    const interval = setInterval(() => {
+      loadBookings().then(b => { setBookings(b); setLastRefresh(new Date()); });
+    }, 30000);
+    return () => clearInterval(interval);
   }, []);
 
   const addBooking = async (b) => {
@@ -432,7 +439,7 @@ export default function App() {
 
       {view === "booking"
         ? <BookingFlow bookings={bookings} onBook={addBooking} settings={settings} isMobile={isMobile} />
-        : <AdminView  bookings={bookings} onCancel={cancelBooking} onUpdate={updateBooking} onBook={addBooking} onClear={clearBookings} settings={settings} onUpdateSettings={updateSettings} isMobile={isMobile} />}
+        : <AdminView  bookings={bookings} onCancel={cancelBooking} onUpdate={updateBooking} onBook={addBooking} onClear={clearBookings} settings={settings} onUpdateSettings={updateSettings} isMobile={isMobile} lastRefresh={lastRefresh} />}
     </div>
   );
 }
@@ -1295,7 +1302,7 @@ function RevenueReport({ bookings, settings }) {
 }
 
 // ── Admin ─────────────────────────────────────────────────────────────────────
-function AdminView({ bookings, onCancel, onUpdate, onBook, onClear, settings, onUpdateSettings, isMobile }) {
+function AdminView({ bookings, onCancel, onUpdate, onBook, onClear, settings, onUpdateSettings, isMobile, lastRefresh }) {
   const [adminMode, setAdminMode]       = useState("schedule");
   const [filter, setFilter]             = useState("upcoming");
   const [clearConfirm, setClearConfirm] = useState(null);
@@ -1352,8 +1359,18 @@ function AdminView({ bookings, onCancel, onUpdate, onBook, onClear, settings, on
 
   return (
     <div style={{ maxWidth: "940px", margin: "0 auto", padding: isMobile ? "20px 12px" : "32px 24px" }}>
-      <h1 style={{ margin: "0 0 4px", fontFamily: "'Space Grotesk', system-ui, sans-serif", fontWeight: 700, fontSize: isMobile ? "20px" : "24px" }}>Admin Dashboard</h1>
-      <p style={{ margin: "0 0 16px", color: T.gray, fontSize: "14px" }}>Manage appointments across all bays.</p>
+      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", flexWrap: "wrap", gap: "8px", marginBottom: "16px" }}>
+        <div>
+          <h1 style={{ margin: "0 0 4px", fontFamily: "'Space Grotesk', system-ui, sans-serif", fontWeight: 700, fontSize: isMobile ? "20px" : "24px" }}>Admin Dashboard</h1>
+          <p style={{ margin: 0, color: T.gray, fontSize: "14px" }}>Manage appointments across all bays.</p>
+        </div>
+        {lastRefresh && (
+          <div style={{ fontSize: "11px", color: T.gray, display: "flex", alignItems: "center", gap: "5px", paddingBottom: "2px" }}>
+            <span style={{ width: "7px", height: "7px", borderRadius: "50%", background: "#22C55E", display: "inline-block", flexShrink: 0 }} />
+            Live · updated {lastRefresh.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+          </div>
+        )}
+      </div>
 
       {/* Mode toggle */}
       <div style={{ display: "flex", gap: "3px", background: "#EBEBEB", borderRadius: "7px", padding: "3px", width: "fit-content", marginBottom: "24px" }}>
