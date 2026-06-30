@@ -659,6 +659,10 @@ function BookingFlow({ bookings, onBook, settings, isMobile }) {
               <span style={{ color: T.gray }}>{selectedSvcs.map(s => s.name).join(", ")}</span>
             </div>
           )}
+
+          <div style={{ background: T.offWhite, border: `1px solid ${T.lightGray}`, borderRadius: "8px", padding: "10px 14px", marginBottom: "20px", fontSize: "12px", color: T.gray, lineHeight: "1.5" }}>
+            ⓘ All prices shown are estimates and subject to change based on vehicle and parts required. Applicable taxes are not included in the prices listed.
+          </div>
           <div style={{ display: "flex", justifyContent: "flex-end" }}>
             <button onClick={() => setStep(2)} disabled={sel.serviceIds.length === 0} style={sel.serviceIds.length > 0 ? btn.primary : btn.disabled}>Next →</button>
           </div>
@@ -791,7 +795,7 @@ function BookingFlow({ bookings, onBook, settings, isMobile }) {
           </div>
 
           {/* Summary */}
-          <div style={{ background: T.white, border: `1px solid ${T.lightGray}`, borderRadius: "8px", padding: "14px 16px", marginBottom: "28px" }}>
+          <div style={{ background: T.white, border: `1px solid ${T.lightGray}`, borderRadius: "8px", padding: "14px 16px", marginBottom: "10px" }}>
             <p style={sectionLabel}>Booking Summary</p>
             {[
               ["Services", selectedSvcs.map(s => s.name).join(", ")],
@@ -804,6 +808,9 @@ function BookingFlow({ bookings, onBook, settings, isMobile }) {
                 <span style={{ fontWeight: 500, textAlign: "right", marginLeft: "12px" }}>{value}</span>
               </div>
             ))}
+          </div>
+          <div style={{ fontSize: "11px", color: T.gray, marginBottom: "20px", lineHeight: "1.6", padding: "0 2px" }}>
+            ⓘ All prices are estimates and subject to change based on your vehicle and parts required. Applicable taxes are not included in the prices shown.
           </div>
 
           <div style={{ display: "flex", justifyContent: "space-between" }}>
