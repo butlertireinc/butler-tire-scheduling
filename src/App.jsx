@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -329,6 +329,7 @@ export default function App() {
   const [showPinModal, setShowPinModal]   = useState(false);
   const [lastRefresh, setLastRefresh]     = useState(null);
   const isMobile = useMobile();
+  const versionRef = useRef(0); // increments on every local write — guards against stale auto-refresh overwrites
 
   useEffect(() => {
     const link = document.createElement("link");
@@ -338,9 +339,16 @@ export default function App() {
     loadBookings().then(b => { setBookings(b); setReady(true); setLastRefresh(new Date()); });
     loadSettings().then(s => setSettings(s));
 
-    // Auto-refresh bookings every 30 seconds
+    // Auto-refresh bookings every 30 seconds — but never overwrite a booking
+    // that was added/changed locally while this fetch was in flight.
     const interval = setInterval(() => {
-      loadBookings().then(b => { setBookings(b); setLastRefresh(new Date()); });
+      const versionAtFetchStart = versionRef.current;
+      loadBookings().then(b => {
+        if (versionRef.current === versionAtFetchStart) {
+          setBookings(b);
+        }
+        setLastRefresh(new Date());
+      });
     }, 30000);
     return () => clearInterval(interval);
   }, []);
@@ -348,24 +356,28 @@ export default function App() {
   const addBooking = async (b) => {
     const next = [...bookings, b];
     setBookings(next);
+    versionRef.current++;
     await saveBookings(next);
   };
 
   const cancelBooking = async (id) => {
     const next = bookings.map(b => b.id === id ? { ...b, status: "cancelled" } : b);
     setBookings(next);
+    versionRef.current++;
     await saveBookings(next);
   };
 
   const updateBooking = async (id, changes) => {
     const next = bookings.map(b => b.id === id ? { ...b, ...changes } : b);
     setBookings(next);
+    versionRef.current++;
     await saveBookings(next);
   };
 
   const clearBookings = async (filterFn) => {
     const next = bookings.filter(filterFn);
     setBookings(next);
+    versionRef.current++;
     await saveBookings(next);
   };
 
