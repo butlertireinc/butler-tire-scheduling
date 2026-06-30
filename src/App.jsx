@@ -60,27 +60,95 @@ const T = {
 };
 
 // ── Storage helpers ───────────────────────────────────────────────────────────
-async function loadBookings() {
+// Talks directly to Upstash Redis so every device shares the same real-time
+// data. Each booking is stored under its OWN key — never as one big shared
+// list — so two people saving at the same moment (a customer booking online
+// + you adding one in admin) can never overwrite or delete each other's data.
+//
+// IMPORTANT: loadBookings() returns `null` if the fetch genuinely failed
+// (network blip, Upstash hiccup, etc.) — this is deliberately different from
+// returning `[]`, which means "we asked, and there really are zero bookings."
+// The app never treats a failed fetch as if it confirmed an empty schedule —
+// that mix-up was the root cause of appointments appearing to vanish.
+const KV_URL   = import.meta.env.VITE_UPSTASH_URL   || "";
+const KV_TOKEN = import.meta.env.VITE_UPSTASH_TOKEN || "";
+
+const BOOKING_PREFIX     = "mechshop-booking-item:";
+const BOOKING_INDEX_KEY  = "mechshop-booking-ids";
+const MIGRATION_FLAG_KEY = "mechshop-migrated-v1";
+const bookingKey = (id) => `${BOOKING_PREFIX}${id}`;
+
+// Sentinel distinguishing "the request itself failed" from a legitimate
+// Redis response of null/empty.
+const FETCH_FAILED = Symbol("fetch-failed");
+async function redisCmd(args) {
+  if (!KV_URL) return FETCH_FAILED;
   try {
-    const r = await window.storage.get(STORAGE_KEY, true);
-    return r ? JSON.parse(r.value) : [];
-  } catch { return []; }
+    const r = await fetch(KV_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${KV_TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify(args),
+    });
+    if (!r.ok) return FETCH_FAILED;
+    const data = await r.json();
+    if (data?.error) return FETCH_FAILED;
+    return data?.result ?? null;
+  } catch (e) { console.error("Storage error:", e); return FETCH_FAILED; }
+}
+
+async function fetchBookingValues(ids) {
+  if (ids.length === 0) return [];
+  const values = await redisCmd(["MGET", ...ids.map(bookingKey)]);
+  if (values === FETCH_FAILED || !Array.isArray(values)) return null;
+  return values
+    .map(v => { try { return v ? JSON.parse(v) : null; } catch { return null; } })
+    .filter(Boolean);
+}
+
+async function loadBookings() {
+  const idsResult = await redisCmd(["SMEMBERS", BOOKING_INDEX_KEY]);
+  if (idsResult === FETCH_FAILED) return null; // fetch failed — caller must NOT wipe the UI
+  const ids = Array.isArray(idsResult) ? idsResult : [];
+
+  if (ids.length === 0) {
+    // Only ever migrate the old whole-list data ONCE, tracked by an explicit
+    // flag — never re-triggered just because the index briefly looked empty
+    // (which can also simply mean a request hiccup, not "no bookings").
+    const migrated = await redisCmd(["GET", MIGRATION_FLAG_KEY]);
+    if (migrated === FETCH_FAILED) return null;
+    if (!migrated) {
+      const legacyRaw = await redisCmd(["GET", STORAGE_KEY]);
+      if (legacyRaw !== FETCH_FAILED && legacyRaw) {
+        try {
+          const legacyArr = JSON.parse(legacyRaw);
+          if (Array.isArray(legacyArr) && legacyArr.length > 0) {
+            for (const b of legacyArr) {
+              if (!b?.id) continue;
+              await redisCmd(["SET", bookingKey(b.id), JSON.stringify(b)]);
+              await redisCmd(["SADD", BOOKING_INDEX_KEY, b.id]);
+            }
+          }
+        } catch { /* ignore malformed legacy data */ }
+      }
+      await redisCmd(["SET", MIGRATION_FLAG_KEY, "1"]);
+      const idsAfter = await redisCmd(["SMEMBERS", BOOKING_INDEX_KEY]);
+      if (idsAfter === FETCH_FAILED) return null;
+      return await fetchBookingValues(Array.isArray(idsAfter) ? idsAfter : []);
+    }
+    return []; // already migrated, genuinely zero bookings
+  }
+
+  return await fetchBookingValues(ids);
 }
 
 async function saveBooking(b) {
-  try {
-    const all = await loadBookings();
-    const next = all.filter(x => x.id !== b.id).concat(b);
-    await window.storage.set(STORAGE_KEY, JSON.stringify(next), true);
-  } catch (e) { console.error("Storage error:", e); }
+  await redisCmd(["SET", bookingKey(b.id), JSON.stringify(b)]);
+  await redisCmd(["SADD", BOOKING_INDEX_KEY, b.id]);
 }
 
 async function deleteBookingRecord(id) {
-  try {
-    const all = await loadBookings();
-    const next = all.filter(x => x.id !== id);
-    await window.storage.set(STORAGE_KEY, JSON.stringify(next), true);
-  } catch (e) { console.error("Storage error:", e); }
+  await redisCmd(["DEL", bookingKey(id)]);
+  await redisCmd(["SREM", BOOKING_INDEX_KEY, id]);
 }
 
 // ── Crypto ────────────────────────────────────────────────────────────────────
@@ -98,8 +166,8 @@ async function hashPassword(pwd) {
 async function loadSettings() {
   let s = { ...DEFAULT_SETTINGS };
   try {
-    const r = await window.storage.get(SETTINGS_KEY, true);
-    if (r) s = { ...DEFAULT_SETTINGS, ...JSON.parse(r.value) };
+    const raw = await redisCmd(["GET", SETTINGS_KEY]);
+    if (raw && raw !== FETCH_FAILED) s = { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
   } catch { /* storage unavailable, use defaults */ }
 
   // Always ensure a password hash is set — never leave it null
@@ -114,7 +182,7 @@ async function loadSettings() {
 }
 
 async function saveSettings(s) {
-  try { await window.storage.set(SETTINGS_KEY, JSON.stringify(s), true); }
+  try { await redisCmd(["SET", SETTINGS_KEY, JSON.stringify(s)]); }
   catch (e) { console.error("Settings error:", e); }
 }
 
@@ -347,15 +415,21 @@ export default function App() {
     link.rel = "stylesheet";
     link.href = "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&display=swap";
     document.head.appendChild(link);
-    loadBookings().then(b => { setBookings(b); setReady(true); setLastRefresh(new Date()); });
+    loadBookings().then(b => {
+      if (Array.isArray(b)) setBookings(b); // null = fetch failed, keep whatever we had (empty on first load)
+      setReady(true);
+      setLastRefresh(new Date());
+    });
     loadSettings().then(s => setSettings(s));
 
-    // Auto-refresh bookings every 30 seconds — but never overwrite a booking
-    // that was added/changed locally while this fetch was in flight.
+    // Auto-refresh bookings every 30 seconds — but never overwrite the screen
+    // with a result that's stale (local change happened mid-fetch) OR with a
+    // failed fetch (which returns null, not an empty array). A genuine read
+    // failure must never be mistaken for "there are no appointments."
     const interval = setInterval(() => {
       const versionAtFetchStart = versionRef.current;
       loadBookings().then(b => {
-        if (versionRef.current === versionAtFetchStart) {
+        if (versionRef.current === versionAtFetchStart && Array.isArray(b)) {
           setBookings(b);
         }
         setLastRefresh(new Date());
