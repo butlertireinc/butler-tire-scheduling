@@ -60,6 +60,29 @@ const T = {
 };
 
 // ── Storage helpers ───────────────────────────────────────────────────────────
+async function loadBookings() {
+  try {
+    const r = await window.storage.get(STORAGE_KEY, true);
+    return r ? JSON.parse(r.value) : [];
+  } catch { return []; }
+}
+
+async function saveBooking(b) {
+  try {
+    const all = await loadBookings();
+    const next = all.filter(x => x.id !== b.id).concat(b);
+    await window.storage.set(STORAGE_KEY, JSON.stringify(next), true);
+  } catch (e) { console.error("Storage error:", e); }
+}
+
+async function deleteBookingRecord(id) {
+  try {
+    const all = await loadBookings();
+    const next = all.filter(x => x.id !== id);
+    await window.storage.set(STORAGE_KEY, JSON.stringify(next), true);
+  } catch (e) { console.error("Storage error:", e); }
+}
+
 // ── Crypto ────────────────────────────────────────────────────────────────────
 // Lockout tracking lives at module level — persists while the page is open,
 // but is completely isolated per browser/device. A customer on their phone
@@ -70,18 +93,6 @@ let _lockedUntil   = 0;
 async function hashPassword(pwd) {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(pwd));
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
-}
-
-async function loadBookings() {
-  try {
-    const r = await window.storage.get(STORAGE_KEY, true);
-    return r ? JSON.parse(r.value) : [];
-  } catch { return []; }
-}
-
-async function saveBookings(list) {
-  try { await window.storage.set(STORAGE_KEY, JSON.stringify(list), true); }
-  catch (e) { console.error("Storage error:", e); }
 }
 
 async function loadSettings() {
@@ -354,31 +365,41 @@ export default function App() {
   }, []);
 
   const addBooking = async (b) => {
-    const next = [...bookings, b];
-    setBookings(next);
+    setBookings(prev => [...prev, b]);
     versionRef.current++;
-    await saveBookings(next);
+    await saveBooking(b);
   };
 
   const cancelBooking = async (id) => {
-    const next = bookings.map(b => b.id === id ? { ...b, status: "cancelled" } : b);
-    setBookings(next);
+    let updated = null;
+    setBookings(prev => prev.map(b => {
+      if (b.id !== id) return b;
+      updated = { ...b, status: "cancelled" };
+      return updated;
+    }));
     versionRef.current++;
-    await saveBookings(next);
+    if (updated) await saveBooking(updated);
   };
 
   const updateBooking = async (id, changes) => {
-    const next = bookings.map(b => b.id === id ? { ...b, ...changes } : b);
-    setBookings(next);
+    let updated = null;
+    setBookings(prev => prev.map(b => {
+      if (b.id !== id) return b;
+      updated = { ...b, ...changes };
+      return updated;
+    }));
     versionRef.current++;
-    await saveBookings(next);
+    if (updated) await saveBooking(updated);
   };
 
   const clearBookings = async (filterFn) => {
-    const next = bookings.filter(filterFn);
-    setBookings(next);
+    let removed = [];
+    setBookings(prev => {
+      removed = prev.filter(b => !filterFn(b));
+      return prev.filter(filterFn);
+    });
     versionRef.current++;
-    await saveBookings(next);
+    await Promise.all(removed.map(b => deleteBookingRecord(b.id)));
   };
 
   const updateSettings = async (changes) => {
@@ -2133,13 +2154,17 @@ function CalDayView({ date, bookings, settings, onAdd, onCancel, onUpdate }) {
   const dayBks = bookings.filter(b => b.date === ds && (b.status === "confirmed" || b.status === "completed"));
   const isClosed  = isHolidayClosed(ds) || isWeekendClosed(ds, settings) || isDateClosed(ds, settings);
   const [cancelConfirm, setCancelConfirm] = useState(null);
-  const [expandedNotes, setExpandedNotes] = useState(null);
+  const [editingNotes, setEditingNotes]   = useState(null); // booking id currently being edited
+  const [draftNote, setDraftNote]         = useState("");
 
   if (isClosed) return (
     <div style={{ padding: "32px", textAlign: "center", color: T.red, fontSize: "14px", fontWeight: 500 }}>
       {isHolidayClosed(ds) || isDateClosed(ds, settings) ? "Closed — Holiday" : "Closed — Weekend (enable in Settings → Weekend Hours)"}
     </div>
   );
+
+  const startEditing = (bk) => { setEditingNotes(bk.id); setDraftNote(bk.notes || ""); };
+  const saveNote = (bk) => { onUpdate && onUpdate(bk.id, { notes: draftNote }); setEditingNotes(null); };
 
   return (
     <div style={{ padding: "16px" }}>
@@ -2162,19 +2187,34 @@ function CalDayView({ date, bookings, settings, onAdd, onCancel, onUpdate }) {
                       <div style={{ fontSize: "11px", color: T.gray, marginTop: "1px" }}>{bk.year} {bk.make} {bk.model}</div>
                       <div style={{ fontSize: "11px", color: T.yellow, marginTop: "2px", fontWeight: 500 }}>{getBkNames(bk, getServices(settings))}</div>
 
-                      {bk.notes && (
-                        <div style={{ marginTop: "5px" }}>
-                          <button onClick={() => setExpandedNotes(expandedNotes === bk.id ? null : bk.id)}
-                            style={{ border: "none", background: "none", cursor: "pointer", fontSize: "11px", color: T.gray, padding: 0, fontFamily: "inherit", textDecoration: "underline" }}>
-                            {expandedNotes === bk.id ? "Hide note" : "📝 Note"}
-                          </button>
-                          {expandedNotes === bk.id && (
-                            <div style={{ fontSize: "11px", color: T.black, background: T.white, border: `1px solid ${T.lightGray}`, borderRadius: "4px", padding: "5px 7px", marginTop: "4px", fontStyle: "italic" }}>
-                              "{bk.notes}"
+                      {/* Notes — view, edit, or add */}
+                      <div style={{ marginTop: "6px" }}>
+                        {editingNotes === bk.id ? (
+                          <div>
+                            <textarea
+                              autoFocus
+                              value={draftNote}
+                              onChange={e => setDraftNote(e.target.value)}
+                              placeholder="Add a note about this appointment..."
+                              style={{ width: "100%", boxSizing: "border-box", resize: "vertical", minHeight: "50px", border: `1px solid ${T.lightGray}`, borderRadius: "4px", padding: "5px 7px", fontSize: "11px", fontFamily: "inherit", color: T.black, background: T.white, outline: "none" }}
+                            />
+                            <div style={{ display: "flex", gap: "4px", marginTop: "4px" }}>
+                              <button onClick={() => saveNote(bk)} style={{ border: "none", background: T.yellow, color: T.white, borderRadius: "4px", padding: "3px 10px", fontSize: "10px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Save</button>
+                              <button onClick={() => setEditingNotes(null)} style={{ border: `1px solid ${T.lightGray}`, background: T.white, color: T.gray, borderRadius: "4px", padding: "3px 10px", fontSize: "10px", cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
                             </div>
-                          )}
-                        </div>
-                      )}
+                          </div>
+                        ) : bk.notes ? (
+                          <div onClick={() => onUpdate && startEditing(bk)} style={{ fontSize: "11px", color: T.black, background: T.white, border: `1px solid ${T.lightGray}`, borderRadius: "4px", padding: "5px 7px", fontStyle: "italic", cursor: onUpdate ? "pointer" : "default" }} title={onUpdate ? "Click to edit" : ""}>
+                            "{bk.notes}" {onUpdate && <span style={{ fontStyle: "normal", color: T.gray }}>✏️</span>}
+                          </div>
+                        ) : (
+                          onUpdate && (
+                            <button onClick={() => startEditing(bk)} style={{ border: "none", background: "none", cursor: "pointer", fontSize: "11px", color: T.gray, padding: 0, fontFamily: "inherit", textDecoration: "underline" }}>
+                              + Add note
+                            </button>
+                          )
+                        )}
+                      </div>
 
                       {bk.status !== "completed" && !bk.isBlock && onCancel && (
                         <div style={{ marginTop: "7px" }}>
